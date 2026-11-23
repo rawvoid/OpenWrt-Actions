@@ -111,8 +111,12 @@ set_queue_rps() {
   _sqr_qdir="$1"
   _sqr_cpus="$2"
   _sqr_flow="$3"
-  [ -w "${_sqr_qdir}/rps_cpus" ] && printf '%s\n' "$_sqr_cpus" > "${_sqr_qdir}/rps_cpus" 2>/dev/null || true
-  [ -w "${_sqr_qdir}/rps_flow_cnt" ] && printf '%s\n' "$_sqr_flow" > "${_sqr_qdir}/rps_flow_cnt" 2>/dev/null || true
+  if [ -w "${_sqr_qdir}/rps_cpus" ]; then
+    printf '%s\n' "$_sqr_cpus" > "${_sqr_qdir}/rps_cpus" 2>/dev/null || true
+  fi
+  if [ -w "${_sqr_qdir}/rps_flow_cnt" ]; then
+    printf '%s\n' "$_sqr_flow" > "${_sqr_qdir}/rps_flow_cnt" 2>/dev/null || true
+  fi
 }
 
 tune_queues_and_rps() {

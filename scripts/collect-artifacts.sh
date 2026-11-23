@@ -111,7 +111,9 @@ release_body="${OUTPUT_DIR}/release-body.md"
 EOF
 
   while read -r sum fname; do
-    [ -n "$sum" ] && [ -n "$fname" ] || continue
+    if [ -z "$sum" ] || [ -z "$fname" ]; then
+      continue
+    fi
     fpath="${OUTPUT_DIR}/${fname}"
     size_bytes="$(wc -c < "$fpath" | tr -d ' ')"
     size_mib="$(awk -v b="$size_bytes" 'BEGIN { printf "%.2f MiB", b / 1048576 }')"
