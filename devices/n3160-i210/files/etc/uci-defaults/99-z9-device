@@ -1,0 +1,28 @@
+#!/bin/sh
+# Device-specific first-boot configuration for n3160-i210.
+# Runs after 99-default-settings* and 99-z0-common.
+
+# Disable global packet_steering so our WAN-only RPS/RFS policy in /etc/rc.local
+# is never overwritten by netifd's /etc/init.d/packet_steering on interface.* events.
+if uci -q get network.globals >/dev/null 2>&1 || uci -q set network.globals=globals; then
+  uci -q set network.globals.packet_steering='0'
+  uci -q commit network 2>/dev/null || true
+fi
+
+if uci -q get system.@imm_init[0] >/dev/null 2>&1; then
+  uci -q set system.@imm_init[0].packet_steering='1'
+  uci -q commit system 2>/dev/null || true
+fi
+
+if [ -x /etc/init.d/packet_steering ]; then
+  /etc/init.d/packet_steering disable 2>/dev/null || true
+fi
+
+# Disable autocore init script (START=99) so it cannot overwrite rps_sock_flow_entries,
+# LAN rps_flow_cnt, or NIC offload flags after rc.local (START=95).
+# /sbin/cpuinfo remains intact for LuCI status CPU/temperature display.
+if [ -x /etc/init.d/autocore ]; then
+  /etc/init.d/autocore disable 2>/dev/null || true
+fi
+
+exit 0

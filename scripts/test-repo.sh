@@ -1,0 +1,328 @@
+#!/usr/bin/env bash
+# Repository integrity, linting, workflow sync, and verify.sh unit tests.
+# Can be run locally and in GitHub Actions without cloning OpenWrt sources.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+failures=0
+
+log_section() {
+  printf '\n==> %s\n' "$1"
+}
+
+pass() {
+  printf '  [PASS] %s\n' "$1"
+}
+
+fail() {
+  printf '  [FAIL] %s\n' "$1" >&2
+  failures=$((failures + 1))
+}
+
+require_tool() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "ERROR: Required tool not found in PATH: $1" >&2
+    exit 1
+  fi
+}
+
+require_tool sh
+require_tool bash
+require_tool shellcheck
+require_tool python3
+
+# 1. Check LF line endings across all repository files
+log_section "Checking LF line endings"
+crlf_files="$(python3 - <<'PY'
+import pathlib
+
+bad = []
+for p in sorted(pathlib.Path(".").rglob("*")):
+    if not p.is_file() or ".git" in p.parts:
+        continue
+    data = p.read_bytes()
+    if b"\r" in data:
+        bad.append(str(p))
+print("\n".join(bad))
+PY
+)"
+if [ -n "$crlf_files" ]; then
+  fail "Files containing CR/CRLF line endings: $(printf '%s' "$crlf_files" | tr '\n' ' ')"
+else
+  pass "All files use LF line endings"
+fi
+
+# 2. Check executable permissions on scripts and target boot scripts
+log_section "Checking executable permissions"
+exec_targets=()
+while IFS= read -r f; do
+  exec_targets+=("$f")
+done < <(
+  find scripts devices common -type f \( \
+    -path 'scripts/*.sh' -o \
+    -path 'devices/*/verify.sh' -o \
+    -path 'devices/*/pre-defconfig.sh' -o \
+    -path 'common/files/etc/uci-defaults/*' -o \
+    -path 'devices/*/files/etc/uci-defaults/*' -o \
+    -path 'devices/*/files/etc/rc.local' \
+  \) | sort
+)
+
+for f in "${exec_targets[@]}"; do
+  if [ -x "$f" ]; then
+    pass "Executable (+x): $f"
+  else
+    fail "Missing +x permission: $f"
+  fi
+done
+
+# 3. Ensure no legacy opkg references exist in common or apk-based device scripts
+log_section "Checking apk-clean uci-defaults (no opkg)"
+if [ -d common/files/etc/uci-defaults ]; then
+  while IFS= read -r f; do
+    if grep -Eiq '\bopkg\b' "$f"; then
+      fail "Forbidden 'opkg' reference in $f"
+    else
+      pass "No 'opkg' in $f"
+    fi
+  done < <(find common/files/etc/uci-defaults -type f | sort)
+fi
+
+for dev_dir in devices/*; do
+  [ -d "$dev_dir" ] || continue
+  if [ -f "${dev_dir}/device.env" ]; then
+    pkg_mgr="$(
+      # shellcheck disable=SC1091
+      source "${dev_dir}/device.env"
+      printf '%s' "${PKG_MANAGER:-apk}"
+    )"
+    if [ "$pkg_mgr" = "apk" ] && [ -d "${dev_dir}/files/etc/uci-defaults" ]; then
+      while IFS= read -r f; do
+        if grep -Eiq '\bopkg\b' "$f"; then
+          fail "Forbidden 'opkg' reference in apk-based device script: $f"
+        else
+          pass "No 'opkg' in $f"
+        fi
+      done < <(find "${dev_dir}/files/etc/uci-defaults" -type f | sort)
+    fi
+  fi
+done
+
+# 4. Basic secret leak guard scan
+log_section "Running secret-leak guard scan"
+secret_hits="$(python3 - <<'PY'
+import pathlib, re
+
+patterns = [
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    re.compile(r"(?i)(pppoe_pass|api_key|api_secret|access_key_secret|zerotier_network_id)\s*=\s*['\"]?[A-Za-z0-9_/+=-]{6,}"),
+]
+hits = []
+for p in sorted(pathlib.Path(".").rglob("*")):
+    if not p.is_file() or ".git" in p.parts:
+        continue
+    if p == pathlib.Path("scripts/test-repo.sh"):
+        continue
+    try:
+        text = p.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        continue
+    for idx, line in enumerate(text.splitlines(), 1):
+        for pat in patterns:
+            if pat.search(line):
+                hits.append(f"{p}:{idx}")
+print("\n".join(hits))
+PY
+)"
+if [ -n "$secret_hits" ]; then
+  fail "Potential hardcoded secret detected at: $(printf '%s' "$secret_hits" | tr '\n' ' ')"
+else
+  pass "No private keys or hardcoded credentials found"
+fi
+
+# 5. Validate GitHub Actions YAML & sync between devices/ and build.yml options
+log_section "Validating workflows and device options sync"
+if python3 -c "import yaml" >/dev/null 2>&1; then
+  for wf in .github/workflows/*.yml; do
+    [ -f "$wf" ] || continue
+    if python3 - "$wf" <<'PY'
+import sys, yaml
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    yaml.safe_load(fh)
+PY
+    then
+      pass "Valid YAML: $wf"
+    else
+      fail "Invalid YAML syntax: $wf"
+    fi
+  done
+
+  if python3 - <<'PY'
+import pathlib, sys, yaml
+
+with open(".github/workflows/build.yml", "r", encoding="utf-8") as fh:
+    wf = yaml.safe_load(fh)
+
+on_cfg = wf.get("on", wf.get(True, {}))
+dev_input = on_cfg["workflow_dispatch"]["inputs"]["device"]
+wf_options = sorted(dev_input.get("options", []))
+wf_default = dev_input.get("default")
+disk_devices = sorted(p.name for p in pathlib.Path("devices").iterdir() if p.is_dir())
+
+if wf_options != disk_devices:
+    print(f"Mismatch: build.yml options={wf_options} vs devices/={disk_devices}", file=sys.stderr)
+    sys.exit(1)
+if wf_default not in wf_options:
+    print(f"Default device '{wf_default}' is not in options={wf_options}", file=sys.stderr)
+    sys.exit(1)
+PY
+  then
+    pass "build.yml device choices match devices/ directory"
+  else
+    fail "build.yml device choices are out of sync with devices/"
+  fi
+else
+  fail "PyYAML is required to validate .github/workflows/*.yml"
+fi
+
+# 6. Validate each device profile metadata
+log_section "Validating device profiles"
+for dev_dir in devices/*; do
+  [ -d "$dev_dir" ] || continue
+  dev_name="$(basename "$dev_dir")"
+
+  if [ ! -f "${dev_dir}/device.env" ]; then
+    fail "Missing ${dev_dir}/device.env"
+    continue
+  fi
+  if [ ! -f "${dev_dir}/seed.config" ]; then
+    fail "Missing ${dev_dir}/seed.config"
+  fi
+
+  if (
+    set -euo pipefail
+    # shellcheck disable=SC1091
+    source "${dev_dir}/device.env"
+    [ "${DEVICE_NAME:-}" = "$dev_name" ]
+    [ -n "${UPSTREAM_FLAVOR:-}" ]
+    [ -n "${UPSTREAM_REPO:-}" ]
+    [ -n "${UPSTREAM_REF:-}" ]
+    [ -n "${TARGET_DIR:-}" ]
+    [ -n "${ARTIFACT_GLOB:-}" ]
+    [ -n "${PKG_MANAGER:-}" ]
+  ); then
+    pass "Valid device.env metadata for ${dev_name}"
+  else
+    fail "Invalid or incomplete device.env in ${dev_dir}"
+  fi
+done
+
+# 7. Syntax check and ShellCheck for target (POSIX sh) and host (bash) scripts
+log_section "Running shell syntax checks and ShellCheck"
+while IFS= read -r f; do
+  if sh -n "$f" && shellcheck -s sh "$f"; then
+    pass "POSIX sh + shellcheck: $f"
+  else
+    fail "POSIX sh / shellcheck failed: $f"
+  fi
+done < <(
+  find common devices -type f \( \
+    -path 'common/files/etc/uci-defaults/*' -o \
+    -path 'devices/*/files/etc/uci-defaults/*' -o \
+    -path 'devices/*/files/etc/rc.local' \
+  \) | sort
+)
+
+while IFS= read -r f; do
+  if bash -n "$f" && shellcheck -s bash "$f"; then
+    pass "bash + shellcheck: $f"
+  else
+    fail "bash / shellcheck failed: $f"
+  fi
+done < <(
+  find scripts devices -type f \( \
+    -path 'scripts/*.sh' -o \
+    -path 'devices/*/verify.sh' -o \
+    -path 'devices/*/pre-defconfig.sh' \
+  \) | sort
+)
+
+# 8. Unit-test devices/n3160-i210/verify.sh against synthetic fixtures
+log_section "Unit-testing devices/n3160-i210/verify.sh"
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+cp devices/n3160-i210/seed.config "${tmp_dir}/pass.config"
+
+if devices/n3160-i210/verify.sh "${tmp_dir}/pass.config" >/dev/null 2>&1; then
+  pass "verify.sh accepts valid n3160-i210 seed.config"
+else
+  fail "verify.sh unexpectedly rejected valid n3160-i210 seed.config"
+fi
+
+run_negative_fixture() {
+  local name="$1"
+  local cfg_path="$2"
+  if devices/n3160-i210/verify.sh "$cfg_path" >/dev/null 2>&1; then
+    fail "verify.sh failed to reject negative fixture: ${name}"
+  else
+    pass "verify.sh rejected negative fixture: ${name}"
+  fi
+}
+
+sed 's/-march=silvermont/-march=goldmont/' "${tmp_dir}/pass.config" > "${tmp_dir}/bad_arch.config"
+run_negative_fixture "goldmont arch" "${tmp_dir}/bad_arch.config"
+
+sed 's/-O2/-O3/' "${tmp_dir}/pass.config" > "${tmp_dir}/bad_o3.config"
+run_negative_fixture "-O3 flag" "${tmp_dir}/bad_o3.config"
+
+for bad_sym in \
+  "CONFIG_PACKAGE_kmod-mac80211=y" \
+  "CONFIG_PACKAGE_wpad-basic-openssl=y" \
+  "CONFIG_PACKAGE_luci-app-ddns-go=y" \
+  "CONFIG_PACKAGE_ethtool=y" \
+  "CONFIG_PACKAGE_miniupnpd-iptables=y" \
+  "CONFIG_VDI_IMAGES=y" \
+  "CONFIG_PACKAGE_zram-swap=y" \
+  "CONFIG_PACKAGE_irqbalance=y"; do
+  fixture_file="${tmp_dir}/bad_${bad_sym//=/_}.config"
+  cp "${tmp_dir}/pass.config" "$fixture_file"
+  printf '%s\n' "$bad_sym" >> "$fixture_file"
+  run_negative_fixture "$bad_sym" "$fixture_file"
+done
+
+# 9. Unit-test scripts/collect-artifacts.sh against synthetic output
+log_section "Unit-testing scripts/collect-artifacts.sh"
+mock_owrt="${tmp_dir}/mock_openwrt"
+mock_bin="${mock_owrt}/bin/targets/x86/64"
+mock_out="${tmp_dir}/mock_out"
+mkdir -p "$mock_bin" "${mock_owrt}/scripts"
+printf 'dummy-efi-image\n' > "${mock_bin}/immortalwrt-25.12.2-x86-64-generic-squashfs-combined-efi.img.gz"
+printf 'CONFIG_TARGET_OPTIMIZATION="-O2 -pipe -march=silvermont -maes -mpclmul"\n' > "${mock_owrt}/.config"
+printf 'All checks passed\n' > "${tmp_dir}/verify.log"
+
+if EFFECTIVE_REF="v25.12.2" UPSTREAM_COMMIT="abc1234" \
+  ./scripts/collect-artifacts.sh devices/n3160-i210/device.env "$mock_owrt" "$mock_out" "${tmp_dir}/verify.log" >/dev/null && \
+  [ -f "${mock_out}/sha256sums" ] && \
+  [ -f "${mock_out}/release-body.md" ] && \
+  grep -q 'generic-squashfs-combined-efi.img.gz' "${mock_out}/release-body.md" && \
+  grep -q 'march=silvermont' "${mock_out}/release-body.md"; then
+  pass "collect-artifacts.sh collects firmware, checksums, and release notes"
+else
+  fail "collect-artifacts.sh synthetic run failed"
+fi
+
+rm -f "${mock_bin}"/*.img.gz
+if ./scripts/collect-artifacts.sh devices/n3160-i210/device.env "$mock_owrt" "${tmp_dir}/mock_empty_out" >/dev/null 2>&1; then
+  fail "collect-artifacts.sh should fail when no files match ARTIFACT_GLOB"
+else
+  pass "collect-artifacts.sh fails clearly when no firmware matches ARTIFACT_GLOB"
+fi
+
+printf '\n=== Repository check finished with %d failure(s) ===\n' "$failures"
+if [ "$failures" -gt 0 ]; then
+  exit 1
+fi

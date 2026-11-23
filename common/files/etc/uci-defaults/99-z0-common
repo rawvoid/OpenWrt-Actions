@@ -1,0 +1,29 @@
+#!/bin/sh
+# Common first-boot defaults shared across all devices and OpenWrt flavors.
+# Named 99-z0-common so ASCII sort order runs it after ImmortalWrt's
+# 99-default-settings and 99-default-settings-chinese.
+
+if uci -q get system.@system[0] >/dev/null 2>&1; then
+  uci -q set system.@system[0].zonename='Asia/Shanghai'
+  uci -q set system.@system[0].timezone='CST-8'
+fi
+
+# Prevent ImmortalWrt's 99-default-settings from reverting language if re-run.
+if uci -q get system.@imm_init[0] >/dev/null 2>&1; then
+  uci -q set system.@imm_init[0].lang='1'
+fi
+
+uci -q commit system 2>/dev/null || true
+
+if [ -f /etc/config/luci ]; then
+  uci -q set luci.main.lang='zh_cn'
+
+  if [ -d /www/luci-static/argon ]; then
+    uci -q set luci.themes.Argon='/luci-static/argon'
+    uci -q set luci.main.mediaurlbase='/luci-static/argon'
+  fi
+
+  uci -q commit luci 2>/dev/null || true
+fi
+
+exit 0

@@ -1,0 +1,20 @@
+# Upstream build tree and generated outputs
+openwrt/
+output/
+artifacts/
+
+# Firmware / temporary artifacts
+*.img
+*.img.gz
+*.iso
+*.qcow2
+*.vdi
+*.vmdk
+*.vhdx
+*.tmp
+*.bak
+
+# macOS / editor metadata
+.DS_Store
+*.swp
+*~
