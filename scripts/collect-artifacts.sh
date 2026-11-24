@@ -79,6 +79,8 @@ if [ "$upstream_commit" = "unknown" ] && [ -d "${OPENWRT_DIR}/.git" ]; then
   upstream_commit="$(git -C "$OPENWRT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 fi
 
+effective_lan_ip="${EFFECTIVE_LAN_IP:-${DEFAULT_LAN_IP:-192.168.1.1}}"
+
 target_opt="default"
 if [ -f "${OPENWRT_DIR}/.config" ]; then
   opt_line="$(grep -E '^CONFIG_TARGET_OPTIMIZATION=' "${OPENWRT_DIR}/.config" || true)"
@@ -101,6 +103,7 @@ release_body="${OUTPUT_DIR}/release-body.md"
 - **Upstream Ref**: \`${effective_ref}\` (\`${upstream_commit}\`)
 - **Target**: \`${TARGET_DIR}\`
 - **Package Manager**: \`${PKG_MANAGER:-apk}\`
+- **Default LAN IP**: \`${effective_lan_ip}\`
 - **Target Optimization**: \`${target_opt}\`
 - **Build Date (UTC)**: \`$(date -u '+%Y-%m-%d %H:%M:%S UTC')\`
 

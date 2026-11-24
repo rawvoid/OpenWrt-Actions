@@ -215,6 +215,9 @@ for dev_dir in devices/*; do
     [ -n "${TARGET_DIR:-}" ]
     [ -n "${ARTIFACT_GLOB:-}" ]
     [ -n "${PKG_MANAGER:-}" ]
+    if [ -n "${DEFAULT_LAN_IP:-}" ]; then
+      ./scripts/configure-lan-ip.sh validate "${DEFAULT_LAN_IP}"
+    fi
   ); then
     pass "Valid device.env metadata for ${dev_name}"
   else
@@ -308,12 +311,15 @@ printf 'dummy-efi-image\n' > "${mock_bin}/immortalwrt-25.12.2-x86-64-generic-squ
 printf 'CONFIG_TARGET_OPTIMIZATION="-O2 -pipe -march=silvermont -maes -mpclmul"\n' > "${mock_owrt}/.config"
 printf 'All checks passed\n' > "${tmp_dir}/verify.log"
 
+# shellcheck disable=SC2016
 if EFFECTIVE_REF="v25.12.2" UPSTREAM_COMMIT="abc1234" \
+  EFFECTIVE_LAN_IP="10.11.1.1" \
   ./scripts/collect-artifacts.sh devices/n3160-i210/device.env "$mock_owrt" "$mock_out" "${tmp_dir}/verify.log" >/dev/null && \
   [ -f "${mock_out}/sha256sums" ] && \
   [ -f "${mock_out}/release-body.md" ] && \
   grep -q 'generic-squashfs-combined-efi.img.gz' "${mock_out}/release-body.md" && \
-  grep -q 'march=silvermont' "${mock_out}/release-body.md"; then
+  grep -q 'march=silvermont' "${mock_out}/release-body.md" && \
+  grep -qF '**Default LAN IP**: `10.11.1.1`' "${mock_out}/release-body.md"; then
   pass "collect-artifacts.sh collects firmware, checksums, and release notes"
 else
   fail "collect-artifacts.sh synthetic run failed"
@@ -324,6 +330,81 @@ if ./scripts/collect-artifacts.sh devices/n3160-i210/device.env "$mock_owrt" "${
   fail "collect-artifacts.sh should fail when no files match ARTIFACT_GLOB"
 else
   pass "collect-artifacts.sh fails clearly when no firmware matches ARTIFACT_GLOB"
+fi
+
+# 10. Unit-test scripts/configure-lan-ip.sh (validation & config_generate patching)
+log_section "Unit-testing scripts/configure-lan-ip.sh"
+for good_ip in "10.11.1.1" "192.168.1.1" "192.168.50.254" "172.16.0.1" "172.31.255.1"; do
+  if ./scripts/configure-lan-ip.sh validate "$good_ip" >/dev/null 2>&1; then
+    pass "configure-lan-ip.sh accepts valid RFC1918 IP: ${good_ip}"
+  else
+    fail "configure-lan-ip.sh rejected valid RFC1918 IP: ${good_ip}"
+  fi
+done
+
+for bad_ip in \
+  "" \
+  "10.11.1.0" \
+  "10.11.1.255" \
+  "10.11.1.1/24" \
+  "10.11.1.256" \
+  "010.11.1.1" \
+  "10.11.1" \
+  "8.8.8.8" \
+  "127.0.0.1" \
+  "0.0.0.0" \
+  "169.254.1.1" \
+  "172.32.0.1" \
+  " 10.11.1.1"; do
+  if ./scripts/configure-lan-ip.sh validate "$bad_ip" >/dev/null 2>&1; then
+    fail "configure-lan-ip.sh failed to reject invalid IP: '${bad_ip}'"
+  else
+    pass "configure-lan-ip.sh rejected invalid IP: '${bad_ip}'"
+  fi
+done
+
+mock_cg_file="${tmp_dir}/config_generate"
+cat > "$mock_cg_file" <<'EOF'
+#!/bin/sh
+generate_network() {
+	case "$protocol" in
+		static)
+			local ipad netm prefix
+			case "$1" in
+				lan) ipad=${ipaddr:-"192.168.1.1"} ;;
+				*) ipad=${ipaddr:-"192.168.$((addr_offset++)).1"} ;;
+			esac
+			netm=${netmask:-"255.255.255.0"}
+			;;
+	esac
+}
+EOF
+chmod +x "$mock_cg_file"
+
+# shellcheck disable=SC2016
+if ./scripts/configure-lan-ip.sh apply "$mock_cg_file" "10.11.1.1" >/dev/null && \
+  [ -x "$mock_cg_file" ] && \
+  grep -qF 'lan) ipad=${ipaddr:-"10.11.1.1"} ;;' "$mock_cg_file" && \
+  grep -qF '*) ipad=${ipaddr:-"192.168.$((addr_offset++)).1"} ;;' "$mock_cg_file"; then
+  pass "configure-lan-ip.sh updates config_generate LAN IP without touching non-LAN branch"
+else
+  fail "configure-lan-ip.sh failed to patch standard config_generate"
+fi
+
+# shellcheck disable=SC2016
+if ./scripts/configure-lan-ip.sh apply "$mock_cg_file" "192.168.1.1" >/dev/null && \
+  grep -qF 'lan) ipad=${ipaddr:-"192.168.1.1"} ;;' "$mock_cg_file"; then
+  pass "configure-lan-ip.sh supports overriding back to 192.168.1.1"
+else
+  fail "configure-lan-ip.sh failed when overriding back to 192.168.1.1"
+fi
+
+mock_bad_cg_file="${tmp_dir}/bad_config_generate"
+printf '#!/bin/sh\necho no ip here\n' > "$mock_bad_cg_file"
+if ./scripts/configure-lan-ip.sh apply "$mock_bad_cg_file" "10.11.1.1" >/dev/null 2>&1; then
+  fail "configure-lan-ip.sh should fail when config_generate lacks LAN IP pattern"
+else
+  pass "configure-lan-ip.sh fails clearly when config_generate lacks LAN IP pattern"
 fi
 
 printf '\n=== Repository check finished with %d failure(s) ===\n' "$failures"

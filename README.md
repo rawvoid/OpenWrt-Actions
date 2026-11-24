@@ -18,7 +18,8 @@ OpenWrt-Actions/
 │       └── lint.yml                       # Push / PR 自动语法、ShellCheck 与配置同步校验
 ├── scripts/
 │   ├── collect-artifacts.sh               # 固件收集、SHA256 校验与 Release Notes 生成
-│   └── test-repo.sh                       # 仓库一致性、脚本静态检查与 verify.sh 单元测试
+│   ├── configure-lan-ip.sh                # 默认 LAN IP 合法性校验与 config_generate 注入
+│   └── test-repo.sh                       # 仓库一致性、脚本静态检查与单元测试
 ├── common/
 │   └── files/                             # 跨设备通用预置文件（先拷入构建目录）
 │       └── etc/
@@ -48,6 +49,7 @@ OpenWrt-Actions/
 2. 点击 **Run workflow** 并填写参数：
    - `device`：目标设备目录名（当前可选 `n3160-i210`）。
    - `ref_override`：临时覆盖 `device.env` 中的 `UPSTREAM_REF`（例如测试新 tag `v25.12.3`），留空则使用默认值。
+   - `lan_ip`：动态覆盖 `device.env` 中的 `DEFAULT_LAN_IP`（仅支持 RFC1918 私网 IPv4，如 `10.11.1.1`、`192.168.10.1`），留空则使用 `device.env` 默认值（若也为空则沿用上游 `192.168.1.1`）；通过修改 `package/base-files/files/bin/config_generate` 生效（首次刷机与重置生效，保留配置升级不覆盖）。
    - `use_cache`：是否启用分层的 `dl/` 与 `.ccache/` 缓存（默认 `true`）。
    - `publish_release`：是否自动发布带设备前缀的 GitHub Release（Tag 格式为 `<device>-<ref>-YYYYMMDD-r<run_number>`，默认 `true`）。
    - `ssh_debug`：是否在下载/编译前挂载 `tmate` 调试终端（默认 `false`，强制启用 `limit-access-to-actor: true`，需在个人 GitHub 账号中预先配置 SSH 公钥）。
@@ -66,6 +68,7 @@ OpenWrt-Actions/
 ### 常见定制入口
 | 定制项 | 修改位置 | 说明 |
 | --- | --- | --- |
+| 默认 LAN IP | [device.env](devices/n3160-i210/device.env) / `lan_ip` | 默认 `10.11.1.1`，支持在触发构建时通过 `lan_ip` 输入框动态覆盖 |
 | 根分区大小 | [seed.config](devices/n3160-i210/seed.config) | 修改 `CONFIG_TARGET_ROOTFS_PARTSIZE=512`（同步更新 `verify.sh` 中对应数值） |
 | DDNS 服务商子包 | [seed.config](devices/n3160-i210/seed.config) | 取消注释 `ddns-scripts-dnspod` / `ddns-scripts-dnspod-v3` / `ddns-scripts-huaweicloud` / `ddns-scripts-cnkuai` |
 | WAN 物理网口名 | [n3160-tune](devices/n3160-i210/files/etc/init.d/n3160-tune) | 顶部 `WAN_IF=""` 默认自动从 UCI 探测并剥离 VLAN 后缀；若需指定可改为 `WAN_IF="eth0"` 等 |
@@ -125,7 +128,7 @@ sysctl kernel.panic net.ipv4.tcp_congestion_control \
 只需 3 步，无需修改工作流核心逻辑：
 
 1. **创建设备目录与档案文件**：新建 `devices/<new-device>/` 并放入以下文件：
-   - `device.env`：定义 `DEVICE_NAME`（必须与目录名一致）、`DEVICE_TITLE`、`UPSTREAM_FLAVOR`（如 `immortalwrt` / `openwrt`）、`UPSTREAM_REPO`、`UPSTREAM_REF`、`TARGET_DIR`、`ARTIFACT_GLOB`、`PKG_MANAGER`（`apk` 或 `opkg`）。
+   - `device.env`：定义 `DEVICE_NAME`（必须与目录名一致）、`DEVICE_TITLE`、`UPSTREAM_FLAVOR`（如 `immortalwrt` / `openwrt`）、`UPSTREAM_REPO`、`UPSTREAM_REF`、`TARGET_DIR`、`ARTIFACT_GLOB`、`PKG_MANAGER`（`apk` 或 `opkg`），以及可选的 `DEFAULT_LAN_IP`。
    - `seed.config`：通过 `make defconfig && ./scripts/diffconfig.sh` 导出的独立精简配置文件。
    - `verify.sh`（可选，推荐）：针对新设备的 `.config` 正反向校验脚本（`chmod +x`）。
    - `files/`（可选）：该设备专属根文件系统覆盖文件；其中 `etc/uci-defaults/` 建议使用 `99-z9-device` 命名以免与 `99-z0-common` 及上游默认脚本冲突（注意避免在 `apk` 基线下使用传统包管理命令）。

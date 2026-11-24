@@ -15,6 +15,11 @@ on:
         type: string
         required: false
         default: ""
+      lan_ip:
+        description: Override default LAN IPv4 (e.g. 192.168.10.1); leave empty to use device.env
+        type: string
+        required: false
+        default: ""
       use_cache:
         description: Restore and save dl/ and .ccache/ caches
         type: boolean
@@ -59,6 +64,7 @@ jobs:
         env:
           INPUT_DEVICE: ${{ inputs.device }}
           INPUT_REF_OVERRIDE: ${{ inputs.ref_override }}
+          INPUT_LAN_IP: ${{ inputs.lan_ip }}
         run: |
           env_file="devices/${INPUT_DEVICE}/device.env"
           seed_file="devices/${INPUT_DEVICE}/seed.config"
@@ -76,6 +82,17 @@ jobs:
           build_date="$(date -u '+%Y%m%d')"
           release_tag="${DEVICE_NAME}-${safe_ref}-${build_date}-r${GITHUB_RUN_NUMBER}"
 
+          input_lan_ip="${INPUT_LAN_IP:-}"
+          input_lan_ip="${input_lan_ip#"${input_lan_ip%%[![:space:]]*}"}"
+          input_lan_ip="${input_lan_ip%"${input_lan_ip##*[![:space:]]}"}"
+          effective_lan_ip="${input_lan_ip:-${DEFAULT_LAN_IP:-}}"
+          if [ -n "$effective_lan_ip" ]; then
+            ./scripts/configure-lan-ip.sh validate "$effective_lan_ip"
+            echo "Default LAN IP: ${effective_lan_ip}"
+          else
+            echo "Default LAN IP: 192.168.1.1 (upstream default)"
+          fi
+
           {
             echo "DEVICE_NAME=${DEVICE_NAME}"
             echo "DEVICE_TITLE=${DEVICE_TITLE:-$DEVICE_NAME}"
@@ -87,6 +104,7 @@ jobs:
             echo "TARGET_DIR=${TARGET_DIR}"
             echo "ARTIFACT_GLOB=${ARTIFACT_GLOB}"
             echo "PKG_MANAGER=${PKG_MANAGER:-apk}"
+            echo "EFFECTIVE_LAN_IP=${effective_lan_ip}"
             echo "SEED_HASH=${seed_hash}"
             echo "BUILD_DATE=${build_date}"
             echo "RELEASE_TAG=${release_tag}"
@@ -140,6 +158,11 @@ jobs:
           upstream_commit="$(git -C openwrt rev-parse --short HEAD)"
           echo "UPSTREAM_COMMIT=${upstream_commit}" >> "$GITHUB_ENV"
           echo "Cloned ${UPSTREAM_REPO} @ ${EFFECTIVE_REF} (${upstream_commit})"
+
+      - name: Configure default LAN IP
+        if: ${{ env.EFFECTIVE_LAN_IP != '' }}
+        run: |
+          ./scripts/configure-lan-ip.sh apply openwrt/package/base-files/files/bin/config_generate "${EFFECTIVE_LAN_IP}"
 
       - name: Update and install feeds
         run: |
