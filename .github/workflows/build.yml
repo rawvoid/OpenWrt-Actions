@@ -166,14 +166,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: openwrt/.ccache
-          key: ccache-${{ env.DEVICE_NAME }}-${{ env.UPSTREAM_FLAVOR }}-${{ env.SAFE_REF }}-${{ env.SEED_HASH }}
+          key: ccache-${{ env.DEVICE_NAME }}-${{ env.UPSTREAM_FLAVOR }}-${{ env.SAFE_REF }}-${{ env.UPSTREAM_COMMIT }}-${{ env.SEED_HASH }}
           restore-keys: |
             ccache-${{ env.DEVICE_NAME }}-${{ env.UPSTREAM_FLAVOR }}-${{ env.SAFE_REF }}-
+            ccache-${{ env.DEVICE_NAME }}-${{ env.UPSTREAM_FLAVOR }}-
 
-      - name: Configure ccache size limit
+      - name: Configure ccache
         run: |
           mkdir -p openwrt/.ccache
-          CCACHE_DIR="${GITHUB_WORKSPACE}/openwrt/.ccache" ccache -M 2G
+          CCACHE_DIR="${GITHUB_WORKSPACE}/openwrt/.ccache" ccache -M 4G
+          CCACHE_DIR="${GITHUB_WORKSPACE}/openwrt/.ccache" ccache -o compiler_check='%compiler% -dumpmachine; %compiler% -dumpversion'
+          CCACHE_DIR="${GITHUB_WORKSPACE}/openwrt/.ccache" ccache -z
+          sed -i '/CCACHE_NOCOMPRESS/d' openwrt/rules.mk
 
       - name: Merge layered custom files
         run: |
