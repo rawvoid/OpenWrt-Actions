@@ -1,6 +1,13 @@
-#!/bin/sh
-# Post-boot hardware & network tuning for Intel N3160 + I210 (kmod-igb).
-# Executed by /etc/init.d/done (START=95).
+#!/bin/sh /etc/rc.common
+# Hardware & network queue tuning for Intel N3160 + I210 (kmod-igb).
+# Runs at START=19 (after kmod-igb load, before S20network brings links UP)
+# so Ring/EEE changes never drop an active WAN/PPPoE link, and reloads
+# idempotently on network/interface.* events to apply IRQ, XPS, and WAN RPS.
+
+# shellcheck disable=SC2034
+START=19
+# shellcheck disable=SC2034
+USE_PROCD=1
 
 # ==============================================================================
 # [Customizable] Leave WAN_IF empty to auto-detect from UCI (network.wan.device),
@@ -9,8 +16,6 @@
 WAN_IF=""
 RING_SIZE=1024
 WAN_RPS_CPUS="e"
-WAN_RPS_FLOW_CNT=4096
-RPS_SOCK_FLOW_ENTRIES=32768
 
 log_msg() {
   if command -v logger >/dev/null 2>&1; then
@@ -24,7 +29,10 @@ set_schedutil_governor() {
     [ -f "${_gov_dir}/scaling_available_governors" ] || continue
     [ -w "${_gov_dir}/scaling_governor" ] || continue
     if grep -qw "schedutil" "${_gov_dir}/scaling_available_governors" 2>/dev/null; then
-      printf 'schedutil\n' > "${_gov_dir}/scaling_governor" 2>/dev/null || true
+      _cur_gov="$(cat "${_gov_dir}/scaling_governor" 2>/dev/null || true)"
+      if [ "$_cur_gov" != "schedutil" ]; then
+        printf 'schedutil\n' > "${_gov_dir}/scaling_governor" 2>/dev/null || true
+      fi
     fi
   done
 }
@@ -57,6 +65,14 @@ resolve_wan_if() {
     [ -n "$_rw_raw" ] || _rw_raw="$(uci -q get network.wan.ifname 2>/dev/null || true)"
     _rw_first="$(printf '%s\n' "$_rw_raw" | awk '{print $1}')"
     _rw_base="${_rw_first%%.*}"
+    if [ -n "$_rw_base" ] && [ ! -d "/sys/class/net/${_rw_base}/device" ]; then
+      for _rw_lower in "/sys/class/net/${_rw_base}"/lower_*; do
+        if [ -e "$_rw_lower" ]; then
+          _rw_base="${_rw_lower##*/lower_}"
+          break
+        fi
+      done
+    fi
     if [ -n "$_rw_base" ] && [ -d "/sys/class/net/${_rw_base}/device" ]; then
       printf '%s\n' "$_rw_base"
       return 0
@@ -68,7 +84,6 @@ resolve_wan_if() {
 
 tune_igb_rings_and_eee() {
   _tire_devs="$1"
-  _tire_changed=0
   command -v ethtool >/dev/null 2>&1 || return 0
 
   for _dev in $_tire_devs; do
@@ -76,18 +91,13 @@ tune_igb_rings_and_eee() {
     _cur_tx="$(ethtool -g "$_dev" 2>/dev/null | awk '/^Current hardware settings:/ {cur=1; next} cur && /^TX:/ {print $2; exit}')"
     if [ -n "$_cur_rx" ] && [ -n "$_cur_tx" ]; then
       if [ "$_cur_rx" != "$RING_SIZE" ] || [ "$_cur_tx" != "$RING_SIZE" ]; then
-        if ethtool -G "$_dev" rx "$RING_SIZE" tx "$RING_SIZE" 2>/dev/null; then
-          _tire_changed=1
-        fi
+        ethtool -G "$_dev" rx "$RING_SIZE" tx "$RING_SIZE" 2>/dev/null || true
       fi
     fi
-    ethtool --set-eee "$_dev" eee off 2>/dev/null || true
+    if ethtool --show-eee "$_dev" 2>/dev/null | grep -q "EEE status: enabled"; then
+      ethtool --set-eee "$_dev" eee off 2>/dev/null || true
+    fi
   done
-
-  # Ring resize triggers an igb reset that re-creates MSI-X vectors; wait before IRQ pinning.
-  if [ "$_tire_changed" -eq 1 ]; then
-    sleep 1
-  fi
 }
 
 pin_queue_irq() {
@@ -103,7 +113,21 @@ pin_queue_irq() {
   ' /proc/interrupts 2>/dev/null)"
 
   if [ -n "$_pqi_irq" ] && [ -w "/proc/irq/${_pqi_irq}/smp_affinity_list" ]; then
-    printf '%s\n' "$_pqi_cpu" > "/proc/irq/${_pqi_irq}/smp_affinity_list" 2>/dev/null || true
+    _pqi_cur="$(cat "/proc/irq/${_pqi_irq}/smp_affinity_list" 2>/dev/null || true)"
+    if [ "$_pqi_cur" != "$_pqi_cpu" ]; then
+      printf '%s\n' "$_pqi_cpu" > "/proc/irq/${_pqi_irq}/smp_affinity_list" 2>/dev/null || true
+    fi
+  fi
+}
+
+set_queue_xps() {
+  _sqx_dev="$1"
+  _sqx_q="$2"
+  _sqx_cpu="$3"
+  _sqx_file="/sys/class/net/${_sqx_dev}/queues/tx-${_sqx_q}/xps_cpus"
+  if [ -w "$_sqx_file" ] && [ "$_sqx_cpu" -ge 0 ] && [ "$_sqx_cpu" -lt 32 ]; then
+    _sqx_mask="$(printf '%x' "$((1 << _sqx_cpu))")"
+    printf '%s\n' "$_sqx_mask" > "$_sqx_file" 2>/dev/null || true
   fi
 }
 
@@ -126,52 +150,58 @@ tune_queues_and_rps() {
 
   [ "$_tqr_cpus" -ge 2 ] || return 0
 
-  if [ -n "$_tqr_wan" ] && [ -d "/sys/class/net/${_tqr_wan}" ]; then
-    # Pin PPPoE carrier WAN TxRx-0 to CPU0 and spread remaining hardware queues across cores.
-    pin_queue_irq "$_tqr_wan" 0 0
-    pin_queue_irq "$_tqr_wan" 1 "$((1 % _tqr_cpus))"
-    pin_queue_irq "$_tqr_wan" 2 "$((2 % _tqr_cpus))"
-    pin_queue_irq "$_tqr_wan" 3 "$((3 % _tqr_cpus))"
-
-    if [ -w /proc/sys/net/core/rps_sock_flow_entries ]; then
-      printf '%s\n' "$RPS_SOCK_FLOW_ENTRIES" > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null || true
+  # Keep global RFS disabled (0 benefit for routed traffic; avoids socket table lookups).
+  if [ -w /proc/sys/net/core/rps_sock_flow_entries ]; then
+    _cur_rfs="$(cat /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null || true)"
+    if [ "$_cur_rfs" != "0" ]; then
+      printf '0\n' > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null || true
     fi
-
-    for _qdir in "/sys/class/net/${_tqr_wan}/queues"/rx-*; do
-      [ -d "$_qdir" ] || continue
-      if [ "${_qdir##*/}" = "rx-0" ]; then
-        set_queue_rps "$_qdir" "$WAN_RPS_CPUS" "$WAN_RPS_FLOW_CNT"
-      else
-        set_queue_rps "$_qdir" "0" "0"
-      fi
-    done
   fi
 
-  # For all non-WAN igb (LAN) ports, keep pure 4-queue hardware RSS (RPS=0) and statically
-  # distribute TxRx-0..3 IRQs across cores (starting on CPU1 to reduce contention on CPU0).
+  # Align TxRx-q IRQ and tx-q XPS 1:1 on CPU (q % ncpus) across WAN and LAN ports
+  # so TX enqueue and TX completion/BQL cleanup always stay on the same core.
   for _dev in $_tqr_devs; do
-    [ "$_dev" != "$_tqr_wan" ] || continue
-    pin_queue_irq "$_dev" 0 "$((1 % _tqr_cpus))"
-    pin_queue_irq "$_dev" 1 "$((2 % _tqr_cpus))"
-    pin_queue_irq "$_dev" 2 "$((3 % _tqr_cpus))"
-    pin_queue_irq "$_dev" 3 0
+    for _txdir in "/sys/class/net/${_dev}/queues"/tx-*; do
+      [ -d "$_txdir" ] || continue
+      _q="${_txdir##*/tx-}"
+      case "$_q" in
+        ''|*[!0-9]*) continue ;;
+      esac
+      _cpu="$((_q % _tqr_cpus))"
+      pin_queue_irq "$_dev" "$_q" "$_cpu"
+      set_queue_xps "$_dev" "$_q" "$_cpu"
+    done
 
-    for _qdir in "/sys/class/net/${_dev}/queues"/rx-*; do
-      [ -d "$_qdir" ] || continue
-      set_queue_rps "$_qdir" "0" "0"
+    for _rxdir in "/sys/class/net/${_dev}/queues"/rx-*; do
+      [ -d "$_rxdir" ] || continue
+      if [ "$_dev" = "$_tqr_wan" ] && [ "${_rxdir##*/}" = "rx-0" ]; then
+        set_queue_rps "$_rxdir" "$WAN_RPS_CPUS" "0"
+      else
+        set_queue_rps "$_rxdir" "0" "0"
+      fi
     done
   done
 }
 
-set_schedutil_governor
-IGB_DEVS="$(find_igb_interfaces)"
-RESOLVED_WAN="$(resolve_wan_if || true)"
+start_service() {
+  set_schedutil_governor
+  _igb_devs="$(find_igb_interfaces)"
+  if [ -n "$_igb_devs" ]; then
+    tune_igb_rings_and_eee "$_igb_devs"
+  fi
+  reload_service
+}
 
-if [ -n "$IGB_DEVS" ]; then
-  tune_igb_rings_and_eee "$IGB_DEVS"
-  tune_queues_and_rps "$IGB_DEVS" "$RESOLVED_WAN"
-fi
+reload_service() {
+  _igb_devs="$(find_igb_interfaces)"
+  _resolved_wan="$(resolve_wan_if || true)"
+  if [ -n "$_igb_devs" ]; then
+    tune_queues_and_rps "$_igb_devs" "$_resolved_wan"
+  fi
+  log_msg "Applied tuning (igb='${_igb_devs:-none}', wan='${_resolved_wan:-none}', ring=${RING_SIZE})"
+}
 
-log_msg "Applied tuning (igb='${IGB_DEVS:-none}', wan='${RESOLVED_WAN:-none}', ring=${RING_SIZE})"
-
-exit 0
+service_triggers() {
+  procd_add_reload_trigger "network"
+  procd_add_raw_trigger "interface.*" 1000 /etc/init.d/n3160-tune reload
+}

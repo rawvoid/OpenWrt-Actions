@@ -66,7 +66,9 @@ done < <(
     -path 'devices/*/verify.sh' -o \
     -path 'devices/*/pre-defconfig.sh' -o \
     -path 'common/files/etc/uci-defaults/*' -o \
+    -path 'common/files/etc/init.d/*' -o \
     -path 'devices/*/files/etc/uci-defaults/*' -o \
+    -path 'devices/*/files/etc/init.d/*' -o \
     -path 'devices/*/files/etc/rc.local' \
   \) | sort
 )
@@ -231,7 +233,9 @@ while IFS= read -r f; do
 done < <(
   find common devices -type f \( \
     -path 'common/files/etc/uci-defaults/*' -o \
+    -path 'common/files/etc/init.d/*' -o \
     -path 'devices/*/files/etc/uci-defaults/*' -o \
+    -path 'devices/*/files/etc/init.d/*' -o \
     -path 'devices/*/files/etc/rc.local' \
   \) | sort
 )

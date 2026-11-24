@@ -31,7 +31,8 @@ OpenWrt-Actions/
 │       ├── verify.sh                      # 编译前 .config 正反向 Fail-Fast 校验脚本
 │       └── files/                         # 设备专属预置文件（后拷入，可覆盖 common）
 │           └── etc/
-│               ├── rc.local               # CPU schedutil、I210 Ring/EEE、静态 IRQ + WAN RPS
+│               ├── init.d/
+│               │   └── n3160-tune         # START=19 调优服务（前置 Ring/EEE、1:1 IRQ/XPS + WAN RPS）
 │               ├── sysctl.d/
 │               │   └── 99-router.conf     # 4GB 内存、conntrack 与网络协议栈调优
 │               └── uci-defaults/
@@ -67,8 +68,8 @@ OpenWrt-Actions/
 | --- | --- | --- |
 | 根分区大小 | [seed.config](devices/n3160-i210/seed.config) | 修改 `CONFIG_TARGET_ROOTFS_PARTSIZE=512`（同步更新 `verify.sh` 中对应数值） |
 | DDNS 服务商子包 | [seed.config](devices/n3160-i210/seed.config) | 取消注释 `ddns-scripts-dnspod` / `ddns-scripts-dnspod-v3` / `ddns-scripts-huaweicloud` / `ddns-scripts-cnkuai` |
-| WAN 物理网口名 | [rc.local](devices/n3160-i210/files/etc/rc.local) | 顶部 `WAN_IF=""` 默认自动从 UCI 探测并剥离 VLAN 后缀；若需指定可改为 `WAN_IF="eth0"` 等 |
-| 内核网络栈参数 | [99-router.conf](devices/n3160-i210/files/etc/sysctl.d/99-router.conf) | 调整 `nf_conntrack_max`、`netdev_budget_usecs` 等参数 |
+| WAN 物理网口名 | [n3160-tune](devices/n3160-i210/files/etc/init.d/n3160-tune) | 顶部 `WAN_IF=""` 默认自动从 UCI 探测并剥离 VLAN 后缀；若需指定可改为 `WAN_IF="eth0"` 等 |
+| 内核网络栈参数 | [99-router.conf](devices/n3160-i210/files/etc/sysctl.d/99-router.conf) | 调整 `nf_conntrack_max`、`netdev_max_backlog`、`netdev_budget` 等参数 |
 
 ### 刷机后验证命令
 
@@ -91,14 +92,18 @@ for eth in /sys/class/net/eth*; do
   ethtool --show-eee "$dev" 2>/dev/null || true
 done
 
-# 4. 检查静态 IRQ 绑核与 WAN 单口 RPS / LAN 纯硬件 RSS 状态
+# 4. 检查 1:1 IRQ/XPS 同核对齐与 WAN 单口纯 RPS / LAN 纯硬件 RSS 状态
 grep -E 'CPU0|igb|TxRx' /proc/interrupts
 cat /proc/sys/net/core/rps_sock_flow_entries
 for q in /sys/class/net/eth*/queues/rx-*; do
   echo "$q: rps_cpus=$(cat "$q/rps_cpus") rps_flow_cnt=$(cat "$q/rps_flow_cnt")"
 done
+for q in /sys/class/net/eth*/queues/tx-*; do
+  echo "$q: xps_cpus=$(cat "$q/xps_cpus")"
+done
 
-# 5. 检查 packet_steering 与 autocore 服务已禁用（防止覆盖 RPS）
+# 5. 检查 n3160-tune 已启用，且 packet_steering 与 autocore 服务已禁用（防止覆盖 RPS）
+/etc/init.d/n3160-tune enabled && echo "n3160-tune enabled OK"
 /etc/init.d/packet_steering enabled || echo "packet_steering disabled OK"
 /etc/init.d/autocore enabled || echo "autocore disabled OK"
 
@@ -110,7 +115,7 @@ ubus call system watchdog
 # 7. 检查 sysctl 与 BBR 拥塞控制生效状态
 sysctl kernel.panic net.ipv4.tcp_congestion_control \
   net.netfilter.nf_conntrack_max net.core.netdev_max_backlog \
-  net.core.netdev_budget net.core.netdev_budget_usecs
+  net.core.netdev_budget
 ```
 
 ---
