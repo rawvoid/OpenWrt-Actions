@@ -10,6 +10,8 @@ on:
         default: n3160-i210
         options:
           - n3160-i210
+          - redmi-ax6-stock
+          - redmi-ax6-stock-nss
       ref_override:
         description: Override UPSTREAM_REF (tag or branch, e.g. v25.12.3); leave empty to use device.env
         type: string

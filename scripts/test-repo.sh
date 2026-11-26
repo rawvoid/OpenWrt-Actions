@@ -311,6 +311,93 @@ for bad_sym in \
   run_negative_fixture "$bad_sym" "$fixture_file"
 done
 
+# 8b. Unit-test devices/redmi-ax6-stock/verify.sh against synthetic fixtures
+log_section "Unit-testing devices/redmi-ax6-stock/verify.sh"
+cp devices/redmi-ax6-stock/seed.config "${tmp_dir}/ax6_pass.config"
+
+if devices/redmi-ax6-stock/verify.sh "${tmp_dir}/ax6_pass.config" >/dev/null 2>&1; then
+  pass "verify.sh accepts valid redmi-ax6-stock seed.config"
+else
+  fail "verify.sh unexpectedly rejected valid redmi-ax6-stock seed.config"
+fi
+
+run_ax6_negative_fixture() {
+  local script_path="$1"
+  local name="$2"
+  local cfg_path="$3"
+  if "$script_path" "$cfg_path" >/dev/null 2>&1; then
+    fail "${script_path} failed to reject negative fixture: ${name}"
+  else
+    pass "${script_path} rejected negative fixture: ${name}"
+  fi
+}
+
+sed 's/-Os/-O2/' "${tmp_dir}/ax6_pass.config" > "${tmp_dir}/ax6_bad_opt.config"
+run_ax6_negative_fixture devices/redmi-ax6-stock/verify.sh "missing -Os flag" "${tmp_dir}/ax6_bad_opt.config"
+
+sed 's/-mcpu=cortex-a53+crc+crypto/-march=silvermont/' "${tmp_dir}/ax6_pass.config" > "${tmp_dir}/ax6_bad_cpu.config"
+run_ax6_negative_fixture devices/redmi-ax6-stock/verify.sh "wrong x86 arch" "${tmp_dir}/ax6_bad_cpu.config"
+
+for bad_sym in \
+  "CONFIG_TARGET_qualcommax_ipq807x_DEVICE_redmi_ax6=y" \
+  "CONFIG_TARGET_ROOTFS_INITRAMFS=y" \
+  "CONFIG_PACKAGE_vim-full=y" \
+  "CONFIG_PACKAGE_vim-runtime=y" \
+  "CONFIG_PACKAGE_nano=y" \
+  "CONFIG_PACKAGE_bind-host=y" \
+  "CONFIG_PACKAGE_luci-theme-argon=y" \
+  "CONFIG_PACKAGE_luci-app-autoreboot=y" \
+  "CONFIG_PACKAGE_luci-app-smartdns=y" \
+  "CONFIG_PACKAGE_luci-app-ttyd=y" \
+  "CONFIG_PACKAGE_socat=y" \
+  "CONFIG_PACKAGE_luci-app-usteer=y" \
+  "CONFIG_PACKAGE_miniupnpd-iptables=y" \
+  "CONFIG_PACKAGE_iptables-zz-legacy=y" \
+  "CONFIG_PACKAGE_automount=y" \
+  "CONFIG_PACKAGE_kmod-usb3=y" \
+  "CONFIG_PACKAGE_kmod-phy-aquantia=y"; do
+  fixture_file="${tmp_dir}/ax6_bad_${bad_sym//=/_}.config"
+  cp "${tmp_dir}/ax6_pass.config" "$fixture_file"
+  printf '%s\n' "$bad_sym" >> "$fixture_file"
+  run_ax6_negative_fixture devices/redmi-ax6-stock/verify.sh "$bad_sym" "$fixture_file"
+done
+
+# 8c. Unit-test devices/redmi-ax6-stock-nss/verify.sh against synthetic fixtures
+log_section "Unit-testing devices/redmi-ax6-stock-nss/verify.sh"
+cp devices/redmi-ax6-stock-nss/seed.config "${tmp_dir}/ax6_nss_pass.config"
+
+if devices/redmi-ax6-stock-nss/verify.sh "${tmp_dir}/ax6_nss_pass.config" >/dev/null 2>&1; then
+  pass "verify.sh accepts valid redmi-ax6-stock-nss seed.config"
+else
+  fail "verify.sh unexpectedly rejected valid redmi-ax6-stock-nss seed.config"
+fi
+
+grep -vxF 'CONFIG_NSS_MEM_PROFILE_MEDIUM=y' "${tmp_dir}/ax6_nss_pass.config" > "${tmp_dir}/ax6_nss_no_512m.config"
+run_ax6_negative_fixture devices/redmi-ax6-stock-nss/verify.sh "missing 512M NSS profile" "${tmp_dir}/ax6_nss_no_512m.config"
+
+grep -vxF 'CONFIG_PACKAGE_sqm-scripts-nss=y' "${tmp_dir}/ax6_nss_pass.config" > "${tmp_dir}/ax6_nss_no_sqm.config"
+run_ax6_negative_fixture devices/redmi-ax6-stock-nss/verify.sh "missing sqm-scripts-nss" "${tmp_dir}/ax6_nss_no_sqm.config"
+
+for bad_sym in \
+  "CONFIG_TARGET_qualcommax_ipq807x_DEVICE_redmi_ax6=y" \
+  "CONFIG_NSS_MEM_PROFILE_HIGH=y" \
+  "CONFIG_ATH11K_MEM_PROFILE_1G=y" \
+  "CONFIG_FEED_nss_packages=y" \
+  "CONFIG_FEED_sqm_scripts_nss=y" \
+  "CONFIG_PACKAGE_e2fsprogs=y" \
+  "CONFIG_PACKAGE_f2fs-tools=y" \
+  "CONFIG_PACKAGE_kmod-ath11k-pci=y" \
+  "CONFIG_PACKAGE_kmod-phy-aquantia=y" \
+  "CONFIG_PACKAGE_vim-full=y" \
+  "CONFIG_PACKAGE_bind-host=y" \
+  "CONFIG_PACKAGE_luci-theme-argon=y" \
+  "CONFIG_PACKAGE_luci-app-autoreboot=y"; do
+  fixture_file="${tmp_dir}/ax6_nss_bad_${bad_sym//=/_}.config"
+  cp "${tmp_dir}/ax6_nss_pass.config" "$fixture_file"
+  printf '%s\n' "$bad_sym" >> "$fixture_file"
+  run_ax6_negative_fixture devices/redmi-ax6-stock-nss/verify.sh "$bad_sym" "$fixture_file"
+done
+
 # 9. Unit-test scripts/collect-artifacts.sh against synthetic output
 log_section "Unit-testing scripts/collect-artifacts.sh"
 mock_owrt="${tmp_dir}/mock_openwrt"
@@ -339,6 +426,31 @@ if EFFECTIVE_REF="v25.12.2" UPSTREAM_COMMIT="abc1234" \
   pass "collect-artifacts.sh collects dual Legacy+UEFI firmware, checksums, and release notes"
 else
   fail "collect-artifacts.sh synthetic run failed"
+fi
+
+mock_ax6_owrt="${tmp_dir}/mock_openwrt_ax6"
+mock_ax6_bin="${mock_ax6_owrt}/bin/targets/qualcommax/ipq807x"
+mock_ax6_out="${tmp_dir}/mock_out_ax6"
+mkdir -p "$mock_ax6_bin" "${mock_ax6_owrt}/scripts"
+printf 'dummy-factory-ubi\n' > "${mock_ax6_bin}/libwrt-25.12.2-qualcommax-ipq807x-redmi_ax6-stock-squashfs-factory.ubi"
+printf 'dummy-sysupgrade-bin\n' > "${mock_ax6_bin}/libwrt-25.12.2-qualcommax-ipq807x-redmi_ax6-stock-squashfs-sysupgrade.bin"
+printf 'dummy-initramfs\n' > "${mock_ax6_bin}/libwrt-25.12.2-qualcommax-ipq807x-redmi_ax6-stock-initramfs-uImage.itb"
+printf 'CONFIG_TARGET_OPTIMIZATION="-Os -pipe -mcpu=cortex-a53+crc+crypto"\n' > "${mock_ax6_owrt}/.config"
+
+# shellcheck disable=SC2016
+if EFFECTIVE_REF="v25.12.2" UPSTREAM_COMMIT="def5678" \
+  EFFECTIVE_LAN_IP="192.168.10.1" \
+  ./scripts/collect-artifacts.sh devices/redmi-ax6-stock-nss/device.env "$mock_ax6_owrt" "$mock_ax6_out" "${tmp_dir}/verify.log" >/dev/null && \
+  [ -f "${mock_ax6_out}/libwrt-25.12.2-qualcommax-ipq807x-redmi_ax6-stock-squashfs-factory.ubi" ] && \
+  [ -f "${mock_ax6_out}/libwrt-25.12.2-qualcommax-ipq807x-redmi_ax6-stock-squashfs-sysupgrade.bin" ] && \
+  [ ! -e "${mock_ax6_out}/libwrt-25.12.2-qualcommax-ipq807x-redmi_ax6-stock-initramfs-uImage.itb" ] && \
+  grep -q 'redmi_ax6-stock-squashfs-factory.ubi' "${mock_ax6_out}/release-body.md" && \
+  grep -q 'redmi_ax6-stock-squashfs-sysupgrade.bin' "${mock_ax6_out}/release-body.md" && \
+  grep -q 'mcpu=cortex-a53+crc+crypto' "${mock_ax6_out}/release-body.md" && \
+  grep -qF '**Default LAN IP**: `192.168.10.1`' "${mock_ax6_out}/release-body.md"; then
+  pass "collect-artifacts.sh collects Redmi AX6 factory.ubi + sysupgrade.bin and skips initramfs"
+else
+  fail "collect-artifacts.sh synthetic Redmi AX6 run failed"
 fi
 
 rm -f "${mock_bin}"/*.img.gz

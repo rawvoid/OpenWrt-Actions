@@ -26,18 +26,31 @@ OpenWrt-Actions/
 │           └── uci-defaults/
 │               └── 99-z0-common           # 通用初始化（上海时区、中文、Argon 默认主题）
 ├── devices/
-│   └── n3160-i210/                        # 首个设备档案：Intel N3160 + I210 纯有线主路由
-│       ├── device.env                     # 上游源、版本标签、目标路径与产物匹配规则
-│       ├── seed.config                    # 该设备完全独立的差异配置（不做多文件拼接）
-│       ├── verify.sh                      # 编译前 .config 正反向 Fail-Fast 校验脚本
-│       └── files/                         # 设备专属预置文件（后拷入，可覆盖 common）
+│   ├── n3160-i210/                        # Intel N3160 + I210 纯有线主路由（ImmortalWrt）
+│   │   ├── device.env                     # 上游源、版本标签、目标路径与产物匹配规则
+│   │   ├── seed.config                    # 该设备完全独立的差异配置（不做多文件拼接）
+│   │   ├── verify.sh                      # 编译前 .config 正反向 Fail-Fast 校验脚本
+│   │   └── files/                         # 设备专属预置文件（后拷入，可覆盖 common）
+│   │       └── etc/
+│   │           ├── init.d/
+│   │           │   └── n3160-tune         # START=19 调优服务（前置 Ring/EEE、1:1 IRQ/XPS + WAN RPS）
+│   │           ├── sysctl.d/
+│   │           │   └── 99-router.conf     # 4GB 内存、conntrack 与网络协议栈调优
+│   │           └── uci-defaults/
+│   │               └── 99-z9-device       # 禁用 packet_steering 与 autocore 启动脚本冲突
+│   ├── redmi-ax6-stock/                   # Redmi AX6 原厂分区无线主路由（纯官方 ImmortalWrt）
+│   │   ├── device.env                     # immortalwrt/immortalwrt v25.12.2，默认 LAN IP 192.168.10.1
+│   │   ├── seed.config                    # 精简主路由配置（标准 SQM/CAKE，无 NSS）
+│   │   ├── verify.sh                      # 原厂分区防砖护栏 + 精简包校验
+│   │   └── files/etc/sysctl.d/99-router.conf
+│   └── redmi-ax6-stock-nss/               # Redmi AX6 原厂分区满血 NSS 主路由（LiBwrt）
+│       ├── device.env                     # LiBwrt/LibWrt v25.12.2，默认 LAN IP 192.168.10.1
+│       ├── seed.config                    # 满血 NSS（512M 内存档案 + Wi-Fi Offload + NSS SQM）
+│       ├── verify.sh                      # 原厂分区 + 512M NSS/ath11k 内存护栏 + 精简包校验
+│       └── files/
 │           └── etc/
-│               ├── init.d/
-│               │   └── n3160-tune         # START=19 调优服务（前置 Ring/EEE、1:1 IRQ/XPS + WAN RPS）
-│               ├── sysctl.d/
-│               │   └── 99-router.conf     # 4GB 内存、conntrack 与网络协议栈调优
-│               └── uci-defaults/
-│                   └── 99-z9-device       # 禁用 packet_steering 与 autocore 启动脚本冲突
+│               ├── sysctl.d/99-router.conf
+│               └── uci-defaults/99-z9-device  # 禁用 packet_steering 与内核 Flow Offloading 防止与 NSS 冲突
 └── README.md
 ```
 
@@ -47,7 +60,7 @@ OpenWrt-Actions/
 
 1. 打开仓库 **Actions** 页面，选择 **Build Firmware**。
 2. 点击 **Run workflow** 并填写参数：
-   - `device`：目标设备目录名（当前可选 `n3160-i210`）。
+   - `device`：目标设备目录名（可选 `n3160-i210`、`redmi-ax6-stock`、`redmi-ax6-stock-nss`）。
    - `ref_override`：临时覆盖 `device.env` 中的 `UPSTREAM_REF`（例如测试新 tag `v25.12.3`），留空则使用默认值。
    - `lan_ip`：动态覆盖 `device.env` 中的 `DEFAULT_LAN_IP`（仅支持 RFC1918 私网 IPv4，如 `10.11.1.1`、`192.168.10.1`），留空则使用 `device.env` 默认值（若也为空则沿用上游 `192.168.1.1`）；通过修改 `package/base-files/files/bin/config_generate` 生效（首次刷机与重置生效，保留配置升级不覆盖）。
    - `use_cache`：是否启用分层的 `dl/` 与 `.ccache/` 缓存（默认 `true`）。
@@ -119,6 +132,48 @@ ubus call system watchdog
 sysctl kernel.panic net.ipv4.tcp_congestion_control \
   net.netfilter.nf_conntrack_max net.core.netdev_max_backlog \
   net.core.netdev_budget
+```
+
+---
+
+## 设备档案：`redmi-ax6-stock` 与 `redmi-ax6-stock-nss`
+
+两套面向 **Redmi 路由器 AX6（原厂双分区 `redmi_ax6-stock`，35.75 MiB 活动分区）** 的平行主路由档案，默认 LAN IP 均为 `192.168.10.1`，可根据需要分别或并行触发编译：
+
+| 档案名 | 上游基线 | 转发加速 | SQM 队列 | 适用场景 |
+| --- | --- | --- | --- | --- |
+| `redmi-ax6-stock` | `immortalwrt/immortalwrt` `v25.12.2` | 软件流卸载（按需在防火墙开启） | 标准 `luci-app-sqm` + `kmod-sched-cake` | 纯官方稳定保底，与官方签名 `apk` 源 100% 兼容 |
+| `redmi-ax6-stock-nss` | `LiBwrt/LibWrt` `v25.12.2`（`ref_override` 可填 `25.12-nss` 追踪最新提交） | 高通满血 NSS（NAT/PPPoE/Bridge/VLAN + Wi-Fi Offload） | `luci-app-sqm` + `sqm-scripts-nss`（LuCI 中选 `nss-zk.qos`） | 跑满千兆有线/无线时 CPU 占用极低、发热量更低 |
+
+### 硬件基线与共同配置
+- **硬件平台**：Qualcomm IPQ8071A（4 核 Cortex-A53 1.4 GHz，支持 ARMv8 CRC/AES/SHA）、512 MiB RAM、128 MiB NAND（原厂双分区 `rootfs` / `rootfs_1` 各 35.75 MiB）、QCN5024（2.4G）+ QCN5054（5G）Wi-Fi 6，无 USB 接口。
+- **编译优化**：`-Os -pipe -mcpu=cortex-a53+crc+crypto`（兼顾原厂分区紧凑体积与硬件加解密性能），开启 `ccache`。
+- **镜像输出**：同时输出 `*redmi_ax6-stock-squashfs-factory.ubi`（首次原厂刷入 / U-Boot 刷入）与 `*redmi_ax6-stock-squashfs-sysupgrade.bin`（OpenWrt/ImmortalWrt 后台升级）。
+- **已启用功能**：PPPoE + 原生 IPv6 / DHCPv6-PD、完整版 `wpad-openssl`（WPA3 / 802.11r/k/v）、LuCI HTTPS（`luci-ssl-openssl` + 默认 Bootstrap 主题 + 中文）、UPnP（`miniupnpd-nftables`）、DDNS（`ddns-scripts` + 阿里云 + Cloudflare + `openssl-util`，省略 `bind-host`）、Wake-on-LAN、KMS（`vlmcsd`）、SQM、Watchcat、TCP BBR、WireGuard、ZeroTier、流量统计（`luci-app-nlbwmon`）、静态 ARP 绑定（`luci-app-arpbind`）、运维工具（`openssh-sftp-server`、`curl`、`htop`、`iperf3`、`tcpdump-mini`、`ip-full`、精简版 `vim`）。
+- **512 MiB 内存与原厂分区保护**：`redmi-ax6-stock-nss` 的 `verify.sh` 强制校验 `CONFIG_NSS_MEM_PROFILE_MEDIUM=y` 与 `CONFIG_ATH11K_MEM_PROFILE_512M=y`（阻止 IPQ807x 默认的 1GB 内存配置引发 OOM）；两套档案均禁止误编扩容布局 `redmi_ax6` 镜像，并剔除 AX6 无硬件对应的 USB / 存储 / PCIe Wi-Fi / Aquantia 10G PHY 驱动。
+
+### 刷机与使用注意事项
+- **分区确认**：仅适用于**原厂双分区**或兼容原厂分区表的第三方自定义 U-Boot；若已改为 OpenWrt 扩容单分区布局，请勿直接刷入。
+- **两套固件互刷**：在 `redmi-ax6-stock` 与 `redmi-ax6-stock-nss` 之间通过 `sysupgrade` 切换时，请**不要勾选保留配置**，防止卸载开关与 SQM 队列脚本残留冲突。
+- **NSS 版专用禁忌**：`redmi-ax6-stock-nss` 首次启动脚本 [99-z9-device](devices/redmi-ax6-stock-nss/files/etc/uci-defaults/99-z9-device) 已自动禁用 `packet_steering`、软件流卸载与硬件流卸载，日常请勿在防火墙里手动开启；同时避免使用 DSA `config bridge-vlan` 语法（与 NSS Wi-Fi Offload 不兼容）。
+- **无线建议**：首次配置将国家代码设为 `CN`；5GHz 追求极稳推荐 `80MHz` 固定非 DFS 信道（如 36/44/149），2.4GHz 推荐 `20MHz` + `WPA2-PSK` 兼容老旧 IoT 设备。
+
+### 刷机后验证命令
+
+```sh
+# 1. 查看闪存剩余空间与当前活动分区（rootfs 或 rootfs_1）
+df -h /overlay
+fw_printenv flag_boot_rootfs
+
+# 2. 检查无线驱动与 512M 内存模式
+dmesg | grep -iE 'ath11k|nss'
+free -m
+
+# 3. 仅 redmi-ax6-stock-nss：验证 NSS 驱动、ECM 加速与 Wi-Fi Offload 生效，且内核流卸载已关闭
+lsmod | grep -E 'qca_nss|ecm'
+cat /sys/module/ath11k/parameters/nss_offload
+uci -q get network.globals.packet_steering
+uci -q get firewall.@defaults[0].flow_offloading
 ```
 
 ---
