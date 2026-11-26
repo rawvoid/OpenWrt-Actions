@@ -286,15 +286,25 @@ run_negative_fixture "goldmont arch" "${tmp_dir}/bad_arch.config"
 sed 's/-O2/-O3/' "${tmp_dir}/pass.config" > "${tmp_dir}/bad_o3.config"
 run_negative_fixture "-O3 flag" "${tmp_dir}/bad_o3.config"
 
+sed 's/CONFIG_GRUB_TIMEOUT="3"/CONFIG_GRUB_TIMEOUT="0"/' "${tmp_dir}/pass.config" > "${tmp_dir}/bad_grub_timeout.config"
+run_negative_fixture "GRUB_TIMEOUT=0" "${tmp_dir}/bad_grub_timeout.config"
+
+grep -vxF 'CONFIG_GRUB_IMAGES=y' "${tmp_dir}/pass.config" > "${tmp_dir}/missing_legacy_grub.config"
+run_negative_fixture "missing CONFIG_GRUB_IMAGES" "${tmp_dir}/missing_legacy_grub.config"
+
 for bad_sym in \
   "CONFIG_PACKAGE_kmod-mac80211=y" \
   "CONFIG_PACKAGE_wpad-basic-openssl=y" \
   "CONFIG_PACKAGE_luci-app-ddns-go=y" \
   "CONFIG_PACKAGE_ethtool=y" \
   "CONFIG_PACKAGE_miniupnpd-iptables=y" \
+  "CONFIG_PACKAGE_iptables-zz-legacy=y" \
   "CONFIG_VDI_IMAGES=y" \
   "CONFIG_PACKAGE_zram-swap=y" \
-  "CONFIG_PACKAGE_irqbalance=y"; do
+  "CONFIG_PACKAGE_irqbalance=y" \
+  "CONFIG_PACKAGE_automount=y" \
+  "CONFIG_PACKAGE_kmod-drm-i915=y" \
+  "CONFIG_PACKAGE_i915-firmware-dmc=y"; do
   fixture_file="${tmp_dir}/bad_${bad_sym//=/_}.config"
   cp "${tmp_dir}/pass.config" "$fixture_file"
   printf '%s\n' "$bad_sym" >> "$fixture_file"
@@ -307,7 +317,9 @@ mock_owrt="${tmp_dir}/mock_openwrt"
 mock_bin="${mock_owrt}/bin/targets/x86/64"
 mock_out="${tmp_dir}/mock_out"
 mkdir -p "$mock_bin" "${mock_owrt}/scripts"
+printf 'dummy-legacy-image\n' > "${mock_bin}/immortalwrt-25.12.2-x86-64-generic-squashfs-combined.img.gz"
 printf 'dummy-efi-image\n' > "${mock_bin}/immortalwrt-25.12.2-x86-64-generic-squashfs-combined-efi.img.gz"
+printf 'dummy-rootfs-only\n' > "${mock_bin}/immortalwrt-25.12.2-x86-64-generic-squashfs-rootfs.img.gz"
 printf 'CONFIG_TARGET_OPTIMIZATION="-O2 -pipe -march=silvermont -maes -mpclmul"\n' > "${mock_owrt}/.config"
 printf 'All checks passed\n' > "${tmp_dir}/verify.log"
 
@@ -317,10 +329,14 @@ if EFFECTIVE_REF="v25.12.2" UPSTREAM_COMMIT="abc1234" \
   ./scripts/collect-artifacts.sh devices/n3160-i210/device.env "$mock_owrt" "$mock_out" "${tmp_dir}/verify.log" >/dev/null && \
   [ -f "${mock_out}/sha256sums" ] && \
   [ -f "${mock_out}/release-body.md" ] && \
+  [ -f "${mock_out}/immortalwrt-25.12.2-x86-64-generic-squashfs-combined.img.gz" ] && \
+  [ -f "${mock_out}/immortalwrt-25.12.2-x86-64-generic-squashfs-combined-efi.img.gz" ] && \
+  [ ! -e "${mock_out}/immortalwrt-25.12.2-x86-64-generic-squashfs-rootfs.img.gz" ] && \
+  grep -q 'generic-squashfs-combined.img.gz' "${mock_out}/release-body.md" && \
   grep -q 'generic-squashfs-combined-efi.img.gz' "${mock_out}/release-body.md" && \
   grep -q 'march=silvermont' "${mock_out}/release-body.md" && \
   grep -qF '**Default LAN IP**: `10.11.1.1`' "${mock_out}/release-body.md"; then
-  pass "collect-artifacts.sh collects firmware, checksums, and release notes"
+  pass "collect-artifacts.sh collects dual Legacy+UEFI firmware, checksums, and release notes"
 else
   fail "collect-artifacts.sh synthetic run failed"
 fi

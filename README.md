@@ -62,14 +62,14 @@ OpenWrt-Actions/
 - **硬件平台**：Intel Celeron N3160（Braswell / Airmont，4C4T，支持 SSE4.1/4.2、AES-NI、PCLMULQDQ，不支持 AVX/AVX2），4GB RAM，Intel I210 网卡（`kmod-igb`，4 Tx / 4 Rx 队列），纯有线无 Wi-Fi。
 - **固件基线**：ImmortalWrt `v25.12.2`（Linux `6.12`，`firewall4` / `nftables`，`apk` 包管理）。
 - **编译优化**：`-O2 -pipe -march=silvermont -maes -mpclmul`，开启 `ccache`。
-- **镜像输出**：仅生成 UEFI SquashFS 镜像（`*squashfs-combined-efi.img.gz`），根分区默认 `512 MiB`。
-- **核心功能**：PPPoE + 原生 IPv6 / DHCPv6-PD、Wake-on-LAN、KMS（`vlmcsd`）、UPnP（强制 `miniupnpd-nftables`）、DDNS（`ddns-scripts` + 阿里云 + Cloudflare，内置 `bind-host` 与 `openssl-util`）、ZeroTier、LuCI HTTPS（`luci-ssl-openssl`）+ Argon 主题 + 中文语言包、完整运维工具（`vim-full`、`htop`、`ethtool-full`、`ip-full`、`tcpdump-mini`、`iperf3`、`mtr-nojson`、`bind-dig`、`lm-sensors`、`pciutils`、`openssh-sftp-server`）。
+- **镜像输出**：同时生成 Legacy BIOS/MBR（`*squashfs-combined.img.gz`）与 UEFI/GPT（`*squashfs-combined-efi.img.gz`）SquashFS 双镜像，GRUB 菜单超时 `3s`，根分区默认 `1024 MiB`。
+- **核心功能**：PPPoE + 原生 IPv6 / DHCPv6-PD、Wake-on-LAN、KMS（`vlmcsd`）、UPnP（强制 `miniupnpd-nftables`）、DDNS（`ddns-scripts` + 阿里云 + Cloudflare，内置 `bind-host` 与 `openssl-util`）、ZeroTier、SQM/CAKE 队列整形（`luci-app-sqm` + `kmod-sched-cake`）、Watchcat 断网守护（`luci-app-watchcat`）、LuCI HTTPS（`luci-ssl-openssl`）+ Argon 主题 + 中文语言包、完整运维工具（`vim-full`、`htop`、`ethtool-full`、`ip-full`、`tcpdump-mini`、`iperf3`、`mtr-nojson`、`bind-dig`、`lm-sensors`、`pciutils`、`smartmontools`、`lsblk`、`jq`、`openssh-sftp-server`）；并精简了 `automount`、`kmod-drm-i915` 与 `i915-firmware-dmc`。
 
 ### 常见定制入口
 | 定制项 | 修改位置 | 说明 |
 | --- | --- | --- |
 | 默认 LAN IP | [device.env](devices/n3160-i210/device.env) / `lan_ip` | 默认 `10.11.1.1`，支持在触发构建时通过 `lan_ip` 输入框动态覆盖 |
-| 根分区大小 | [seed.config](devices/n3160-i210/seed.config) | 修改 `CONFIG_TARGET_ROOTFS_PARTSIZE=512`（同步更新 `verify.sh` 中对应数值） |
+| 根分区大小 | [seed.config](devices/n3160-i210/seed.config) | 修改 `CONFIG_TARGET_ROOTFS_PARTSIZE=1024`（同步更新 `verify.sh` 中对应数值） |
 | DDNS 服务商子包 | [seed.config](devices/n3160-i210/seed.config) | 取消注释 `ddns-scripts-dnspod` / `ddns-scripts-dnspod-v3` / `ddns-scripts-huaweicloud` / `ddns-scripts-cnkuai` |
 | WAN 物理网口名 | [n3160-tune](devices/n3160-i210/files/etc/init.d/n3160-tune) | 顶部 `WAN_IF=""` 默认自动从 UCI 探测并剥离 VLAN 后缀；若需指定可改为 `WAN_IF="eth0"` 等 |
 | 内核网络栈参数 | [99-router.conf](devices/n3160-i210/files/etc/sysctl.d/99-router.conf) | 调整 `nf_conntrack_max`、`netdev_max_backlog`、`netdev_budget` 等参数 |

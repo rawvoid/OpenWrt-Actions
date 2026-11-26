@@ -67,8 +67,10 @@ echo "=== Verifying n3160-i210 configuration: $CONFIG_FILE ==="
 require_cfg "CONFIG_TARGET_x86_64"
 require_cfg "CONFIG_TARGET_x86_64_DEVICE_generic"
 require_cfg "CONFIG_TARGET_ROOTFS_SQUASHFS"
+require_cfg "CONFIG_GRUB_IMAGES"
 require_cfg "CONFIG_GRUB_EFI_IMAGES"
-require_cfg_exact "CONFIG_TARGET_ROOTFS_PARTSIZE=512"
+require_cfg_exact 'CONFIG_GRUB_TIMEOUT="3"'
+require_cfg_exact "CONFIG_TARGET_ROOTFS_PARTSIZE=1024"
 
 # 2. Compiler options & Braswell/Airmont optimization flags
 require_cfg "CONFIG_DEVEL"
@@ -103,6 +105,7 @@ required_packages=(
   kmod-crypto-gcm
   kmod-crypto-sha256
   kmod-tcp-bbr
+  kmod-sched-cake
   kmod-tun
   ppp
   ppp-mod-pppoe
@@ -123,6 +126,8 @@ required_packages=(
   bind-host
   openssl-util
   luci-app-zerotier
+  luci-app-sqm
+  luci-app-watchcat
   luci-theme-argon
   luci-app-argon-config
   luci-theme-bootstrap
@@ -134,6 +139,8 @@ required_packages=(
   luci-i18n-upnp-zh-cn
   luci-i18n-ddns-zh-cn
   luci-i18n-zerotier-zh-cn
+  luci-i18n-sqm-zh-cn
+  luci-i18n-watchcat-zh-cn
   luci-i18n-argon-config-zh-cn
   htop
   vim-full
@@ -145,6 +152,9 @@ required_packages=(
   iperf3
   mtr-nojson
   bind-dig
+  smartmontools
+  lsblk
+  jq
 )
 
 for pkg in "${required_packages[@]}"; do
@@ -161,11 +171,14 @@ forbidden_symbols=(
   CONFIG_PACKAGE_vim
   CONFIG_PACKAGE_ip-tiny
   CONFIG_PACKAGE_miniupnpd-iptables
+  CONFIG_PACKAGE_iptables-zz-legacy
   CONFIG_PACKAGE_zram-swap
   CONFIG_PACKAGE_irqbalance
+  CONFIG_PACKAGE_automount
+  CONFIG_PACKAGE_kmod-drm-i915
+  CONFIG_PACKAGE_i915-firmware-dmc
   CONFIG_TARGET_ROOTFS_EXT4FS
   CONFIG_TARGET_ROOTFS_TARGZ
-  CONFIG_GRUB_IMAGES
   CONFIG_ISO_IMAGES
   CONFIG_VDI_IMAGES
   CONFIG_VMDK_IMAGES
